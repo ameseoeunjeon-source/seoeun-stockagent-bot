@@ -1,0 +1,7 @@
+telethon==1.36.0
+APScheduler==3.10.4
+python-dotenv==1.0.1
+requests==2.32.3
+FinanceDataReader==0.9.96
+google-genai==1.16.1
+tavily-python==0.5.0
