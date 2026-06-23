@@ -1,138 +1,22 @@
 """
-하이브리드 분석 엔진.
-- 규칙기반: 글별 감정점수, 키워드 빈도, 종목 탐지/스코어링, 전체 센티먼트
-- AI(LLM): 상위 LLM_TOP_N 게시글의 요약·종목감정을 정밀 보정 + 전체 요약문 생성
+분석 엔진.
+- 인기 게시글 랭킹: 규칙기반(조회수+공유)
+- 시장 분석(센티먼트/요약/키워드/주목종목): LLM이 게시글을 읽고 통째로 생성
+  → 예시처럼 깔끔한 종목명 + 한 줄 인사이트 + 의미있는 키워드
+- LLM 비활성/실패 시 규칙기반으로 폴백
 """
 import re
 import json
 from collections import Counter, defaultdict
-from pathlib import Path
 
 import config
 import llm
 from lexicon import POSITIVE, NEGATIVE, STOPWORDS
 
-_STOCK_CACHE = config.BASE_DIR / "stock_names.json"
 _word_re = re.compile(r"[가-힣A-Za-z0-9]+")
 
 
-# ----------------------------- 종목 사전 -----------------------------
-def load_stock_names():
-    """KRX 상장 종목명 집합. FinanceDataReader로 받아 로컬 캐시."""
-    if _STOCK_CACHE.exists():
-        try:
-            data = json.loads(_STOCK_CACHE.read_text(encoding="utf-8"))
-            if data:
-                return set(data)
-        except Exception:  # noqa
-            pass
-    names = set()
-    try:
-        import FinanceDataReader as fdr
-        df = fdr.StockListing("KRX")
-        col = "Name" if "Name" in df.columns else df.columns[1]
-        for n in df[col].dropna().tolist():
-            n = str(n).strip()
-            if len(n) >= 2:
-                names.add(n)
-        _STOCK_CACHE.write_text(
-            json.dumps(sorted(names), ensure_ascii=False), encoding="utf-8")
-    except Exception as e:  # noqa
-        print(f"[analyzer] 종목 리스트 로드 실패(웹), 내장 목록 사용: {e}")
-        names = set(_FALLBACK_STOCKS)
-    return names
-
-
-# FinanceDataReader 실패 시 최소 안전망 (주요 대형주 + 감시 구성종목)
-_FALLBACK_STOCKS = [
-    "삼성전자", "SK하이닉스", "삼성전기", "LG에너지솔루션", "현대차", "기아",
-    "삼성바이오로직스", "셀트리온", "POSCO홀딩스", "LG화학", "네이버", "카카오",
-    "LS일렉트릭", "효성중공업", "HD현대일렉트릭", "한온시스템", "OCI홀딩스",
-    "비츠로셀", "예스티", "JW신약", "미래나노텍", "HD한국조선해양", "한화오션",
-]
-
-
-# ----------------------------- 토큰/감정 -----------------------------
-def tokenize(text):
-    return [w for w in _word_re.findall(text)]
-
-
-def sentiment_of(text):
-    """규칙기반 글 감정점수. 키워드 가중치 합을 -100~100 으로 클램프."""
-    score = 0
-    for word, w in POSITIVE.items():
-        if word in text:
-            score += w
-    for word, w in NEGATIVE.items():
-        if word in text:
-            score += w
-    return max(-100, min(100, score * 8))
-
-
-def extract_keywords(posts, top_n):
-    cnt = Counter()
-    for p in posts:
-        seen = set()
-        for tok in tokenize(p["text"]):
-            low = tok.lower()
-            if len(tok) < 2 or low in STOPWORDS or tok.isdigit():
-                continue
-            if tok in seen:
-                continue
-            seen.add(tok)
-            cnt[tok] += 1
-    return cnt.most_common(top_n)
-
-
-# ----------------------------- 종목 스코어링 -----------------------------
-def score_stocks(posts, stock_names, top_n):
-    """
-    각 종목: 언급 글들의 (감정 * (1+공유가중)) 평균을 -100~100 로.
-    언급 1회짜리 노이즈는 제외(최소 언급수 적용은 완만하게).
-    반환: [(종목명, 점수, 대표글), ...]
-    """
-    agg = defaultdict(lambda: {"score": 0.0, "weight": 0.0, "count": 0, "best": None, "best_share": -1})
-    for p in posts:
-        senti = sentiment_of(p["text"])
-        share_w = 1.0 + min(p["forwards"], 500) / 100.0  # 공유 많을수록 가중
-        # 빠른 1차 필터: 토큰 단위로 후보 추출
-        text = p["text"]
-        for name in _candidates_in_text(text, stock_names):
-            a = agg[name]
-            a["score"] += senti * share_w
-            a["weight"] += share_w
-            a["count"] += 1
-            if p["forwards"] > a["best_share"]:
-                a["best_share"] = p["forwards"]
-                a["best"] = p
-    results = []
-    for name, a in agg.items():
-        if a["weight"] == 0:
-            continue
-        score = int(max(-100, min(100, a["score"] / a["weight"])))
-        results.append((name, score, a["count"], a["best"]))
-    # 절댓값(주목도) 큰 순 + 언급수
-    results.sort(key=lambda x: (abs(x[1]) * (1 + x[2] / 5)), reverse=True)
-    return results[:top_n]
-
-
-def _candidates_in_text(text, stock_names):
-    """텍스트에 등장하는 종목명. 2글자 종목은 오탐 많아 단어경계 보강."""
-    hits = set()
-    for name in stock_names:
-        if name in text:
-            if len(name) <= 2:
-                # 너무 짧은 이름은 앞뒤가 한글이면 다른 단어일 가능성 → 스킵
-                idx = text.find(name)
-                before = text[idx - 1] if idx > 0 else " "
-                after = text[idx + len(name)] if idx + len(name) < len(text) else " "
-                if re.match(r"[가-힣]", before) or re.match(r"[가-힣]", after):
-                    continue
-            hits.add(name)
-    return hits
-
-
-# ----------------------------- 전체 센티먼트 -----------------------------
+# ----------------------------- 공통 유틸 -----------------------------
 def _fear_greed_label(score):
     if score <= -60:
         return "극단적 공포"
@@ -145,11 +29,28 @@ def _fear_greed_label(score):
     return "극단적 탐욕"
 
 
+def top_posts(posts, top_n):
+    def pop(p):
+        return p["views"] + p["forwards"] * 30
+    return sorted(posts, key=pop, reverse=True)[:top_n]
+
+
+# ----------------------------- 규칙기반(폴백/보조) -----------------------------
+def sentiment_of(text):
+    score = 0
+    for word, w in POSITIVE.items():
+        if word in text:
+            score += w
+    for word, w in NEGATIVE.items():
+        if word in text:
+            score += w
+    return max(-100, min(100, score * 8))
+
+
 def overall_sentiment(posts):
     if not posts:
         return 0, "중립"
-    total_w = 0.0
-    total = 0.0
+    total_w = total = 0.0
     for p in posts:
         w = 1.0 + min(p["forwards"], 500) / 100.0
         total += sentiment_of(p["text"]) * w
@@ -158,64 +59,130 @@ def overall_sentiment(posts):
     return score, _fear_greed_label(score)
 
 
-# ----------------------------- 인기 게시글 -----------------------------
-def top_posts(posts, top_n):
-    def pop(p):
-        return p["views"] + p["forwards"] * 30  # 공유 1회 = 조회 30 가중
-    return sorted(posts, key=pop, reverse=True)[:top_n]
+def extract_keywords(posts, top_n):
+    cnt = Counter()
+    for p in posts:
+        seen = set()
+        for tok in _word_re.findall(p["text"]):
+            low = tok.lower()
+            if len(tok) < 2 or low in STOPWORDS or tok.isdigit():
+                continue
+            if tok in seen:
+                continue
+            seen.add(tok)
+            cnt[tok] += 1
+    return cnt.most_common(top_n)
 
 
-# ----------------------------- LLM 보정/요약 -----------------------------
-def llm_summary(posts, sentiment_score, label, keywords):
-    if not llm.available() or not posts:
-        return _rule_summary(sentiment_score, label, keywords)
-    sample = "\n".join(f"- {p['text'][:120]}" for p in top_posts(posts, 25))
-    kw = ", ".join(k for k, _ in keywords)
-    system = ("너는 한국 주식시장 애널리스트다. 주어진 텔레그램 글 샘플을 바탕으로 "
-              "현재 시장 분위기를 2~3문장으로 요약하라. 과장 없이 사실 위주로.")
-    user = f"전체 센티먼트: {sentiment_score} ({label})\n주요 키워드: {kw}\n\n글 샘플:\n{sample}"
-    out = llm.chat(system, user, max_tokens=300)
-    return out or _rule_summary(sentiment_score, label, keywords)
-
-
-def _rule_summary(score, label, keywords):
-    kw = ", ".join(k for k, _ in keywords[:5])
-    return (f"현재 시장 투자심리는 '{label}'(센티먼트 {score})입니다. "
-            f"주요 키워드는 {kw} 등이며, 관련 이슈가 게시글에서 활발히 거론되고 있습니다.")
-
-
-def llm_stock_reason(name, best_post):
-    """주목 종목의 한 줄 이유. LLM 가능하면 정밀, 아니면 대표글 발췌."""
-    snippet = (best_post["text"][:140] if best_post else "")
-    if not llm.available() or not best_post:
-        return snippet.replace("\n", " ")
-    system = "주어진 글을 보고 해당 종목이 주목받는 이유를 한 문장(40자 내외)으로 요약하라."
-    out = llm.chat(system, f"종목: {name}\n글: {best_post['text'][:300]}", max_tokens=80)
-    return (out or snippet).replace("\n", " ")
-
-
-# ----------------------------- 메인 진입점 -----------------------------
-def analyze(posts):
-    stock_names = load_stock_names()
-    senti_score, label = overall_sentiment(posts)
-    keywords = extract_keywords(posts, config.TOP_KEYWORDS)
-    stocks_raw = score_stocks(posts, stock_names, config.TOP_STOCKS)
-    populars = top_posts(posts, config.TOP_POSTS)
-
-    # 하이브리드: 상위 종목만 LLM 이유 생성 (비용 절감)
+def _rule_based(posts):
+    """LLM 없이 동작하는 최소 분석."""
+    senti, label = overall_sentiment(posts)
+    kws = extract_keywords(posts, config.TOP_KEYWORDS)
+    # 간단 종목: 감정 강한 인기글에서 첫 줄만
     stocks = []
-    for i, (name, score, count, best) in enumerate(stocks_raw):
-        reason = llm_stock_reason(name, best) if i < config.LLM_TOP_N else (
-            (best["text"][:120].replace("\n", " ")) if best else "")
-        stocks.append({"name": name, "score": score, "count": count, "reason": reason})
+    for p in top_posts(posts, config.TOP_STOCKS):
+        s = sentiment_of(p["text"])
+        stocks.append({
+            "name": p["channel"], "score": s, "count": 0,
+            "reason": p["text"].split("\n")[0][:60],
+        })
+    summary = (f"현재 시장 투자심리는 '{label}'(센티먼트 {senti})입니다. "
+               f"주요 키워드: {', '.join(k for k, _ in kws)}.")
+    return {
+        "sentiment_score": senti, "sentiment_label": label, "summary": summary,
+        "keywords": kws, "stocks": stocks, "popular": top_posts(posts, config.TOP_POSTS),
+    }
 
-    summary = llm_summary(posts, senti_score, label, keywords)
+
+# ----------------------------- LLM 통합 분석 -----------------------------
+_SYSTEM = (
+    "너는 한국 주식·테크 텔레그램 채널 수십 개를 모니터링하는 베테랑 애널리스트다. "
+    "아래는 최근 1시간 여러 채널에 올라온 게시글이다. 이걸 읽고 '시장 인사이트'를 뽑아라. "
+    "링크 나열이 아니라, 사람이 읽고 바로 흐름을 파악할 수 있게 분석해야 한다.\n\n"
+    "반드시 아래 JSON 스키마로만 응답:\n"
+    "{\n"
+    '  "sentiment_score": 정수 (-100~100, -100=극단적 공포, +100=극단적 탐욕),\n'
+    '  "summary": "2~3문장. 오늘 시장을 움직이는 핵심 동인과 분위기를 사실 기반으로. 구체적으로.",\n'
+    '  "keywords": [["키워드", 등장빈도정수], ...최대 5개. 실제 자주/중요하게 다뤄진 테마·종목. 조사·부사 금지],\n'
+    '  "stocks": [\n'
+    '     {"name": "정확한 종목명 또는 테마(예: OCI홀딩스, 전선업계, 모바일 D램)",\n'
+    '      "score": 정수(-100~100, 호재+/악재-),\n'
+    '      "reason": "40자 내외 한 줄. 왜 주목받는지 구체적 사실(수주/실적/가이던스/이벤트)"}\n'
+    "     ...주목도 높은 순 최대 10개\n"
+    "  ]\n"
+    "}\n\n"
+    "규칙: 종목명은 절대 잘리거나 토막내지 말 것(예: '하이닉스'를 '이닉스'로 쓰지 말 것). "
+    "근거 없는 종목 만들지 말 것. reason 은 게시글에 실제 있는 사실만. "
+    "단순 인사·잡담 글은 무시."
+)
+
+
+def _llm_analysis(posts):
+    src = top_posts(posts, 30)
+    blocks = []
+    for p in src:
+        txt = p["text"].replace("\n", " ").strip()
+        blocks.append(f"- ({p['channel']} | 공유 {p['forwards']}) {txt[:350]}")
+    body = "오늘 게시글:\n" + "\n".join(blocks)
+    data = llm.chat_json(_SYSTEM, body, max_tokens=2500)
+    if not data or not isinstance(data, dict):
+        return None
+
+    # 파싱(방어적)
+    try:
+        score = int(data.get("sentiment_score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    score = max(-100, min(100, score))
+
+    kws = []
+    for k in data.get("keywords", []) or []:
+        if isinstance(k, (list, tuple)) and len(k) >= 2:
+            kws.append((str(k[0]), k[1]))
+        elif isinstance(k, dict):
+            kws.append((str(k.get("word") or k.get("keyword", "")), k.get("count", 0)))
+        elif isinstance(k, str):
+            kws.append((k, 0))
+    kws = [(w, c) for w, c in kws if w][:config.TOP_KEYWORDS]
+
+    stocks = []
+    for s in data.get("stocks", []) or []:
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name", "")).strip()
+        if not name:
+            continue
+        try:
+            sc = int(s.get("score", 0))
+        except (TypeError, ValueError):
+            sc = 0
+        stocks.append({
+            "name": name, "score": max(-100, min(100, sc)), "count": 0,
+            "reason": str(s.get("reason", "")).strip()[:120],
+        })
+    stocks = stocks[:config.TOP_STOCKS]
+
+    summary = str(data.get("summary", "")).strip()
+    if not summary or not stocks:
+        return None  # 부실하면 폴백
 
     return {
-        "sentiment_score": senti_score,
-        "sentiment_label": label,
+        "sentiment_score": score,
+        "sentiment_label": _fear_greed_label(score),
         "summary": summary,
-        "keywords": keywords,
+        "keywords": kws,
         "stocks": stocks,
-        "popular": populars,
+        "popular": top_posts(posts, config.TOP_POSTS),
     }
+
+
+# ----------------------------- 진입점 -----------------------------
+def analyze(posts):
+    if not posts:
+        return _rule_based(posts)
+    if llm.available():
+        out = _llm_analysis(posts)
+        if out:
+            return out
+        print("[analyzer] LLM 분석 실패/부실 → 규칙기반 폴백")
+    return _rule_based(posts)

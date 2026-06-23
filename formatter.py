@@ -35,8 +35,10 @@ def format_market(a, ok_channels, total_channels, post_count):
     L.append(f"💡 요약 {a['summary']}\n")
 
     if a["keywords"]:
-        kw = ", ".join(f"{k}({c})" for k, c in a["keywords"])
-        L.append(f"🗣️ Top 키워드: {kw}\n")
+        parts = []
+        for k, c in a["keywords"]:
+            parts.append(f"{k}({c})" if isinstance(c, int) and c > 0 else f"{k}")
+        L.append(f"🗣️ Top 키워드: {', '.join(parts)}\n")
 
     if a["stocks"]:
         L.append("🔥 주목받는 종목")
