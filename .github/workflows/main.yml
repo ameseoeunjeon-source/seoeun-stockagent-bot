@@ -21,16 +21,8 @@ jobs:
           path: state.json
           key: state-${{ github.run_id }}
           restore-keys: state-
-      - run: python main.py
+      - name: create env
         env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
-          TG_PHONE: ${{ secrets.TG_PHONE }}
-          TG_SESSION_STRING: ${{ secrets.TG_SESSION_STRING }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          LLM_ENABLED: 'true'
-          GEMINI_MODEL: 'gemini-2.5-flash'
-          REPORT_MODE: 'full'
-          LOOKBACK_MINUTES: '70'
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: printf '%s' "$ENV_FILE" > .env
+      - run: python main.py
