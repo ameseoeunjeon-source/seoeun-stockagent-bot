@@ -78,7 +78,8 @@ def _empty_struct(posts):
     senti, label = overall_sentiment(posts)
     return {
         "sentiment_score": senti, "sentiment_label": label,
-        "headline": [], "macro": "", "sectors": [], "emerging": [],
+        "headline": [], "macro": "", "holdings": [], "holdings_total": 0,
+        "sectors": [], "emerging": [],
         "actions": [], "keywords": extract_keywords(posts, config.TOP_KEYWORDS),
         "popular": top_posts(posts, config.TOP_POSTS),
     }
@@ -90,12 +91,19 @@ _SYSTEM = (
     "아래는 '지난 약 1시간' 동안 여러 텔레그램 채널에 올라온 게시글이다(번호 매김). "
     "이걸 읽고, 아래 '보유·관심 섹터' 관점에서 이 시간의 시장 인사이트를 정리하라. "
     "링크 나열이 아니라 사람이 읽고 흐름을 바로 파악할 수 있는 분석이어야 한다.\n\n"
+    "[내 실제 보유종목 — 가장 중요. 각 종목/핵심구성종목 관련 내용이 글에 있으면 holdings 에 구체적으로]\n"
+    + watchlist.holdings_for_prompt() + "\n\n"
     "[보유·관심 섹터]\n" + watchlist.sectors_for_prompt() + "\n\n"
     "반드시 아래 JSON 스키마로만 응답:\n"
     "{\n"
     '  "sentiment_score": 정수(-100~100, -100=극단적 공포 ~ +100=극단적 탐욕),\n'
     '  "headline": ["이 시간 핵심 1줄", ...가장 중요한 변화·이벤트 최대 3개],\n'
     '  "macro": "시장·매크로 흐름 2~4문장(지수·유가·금리·환율·지정학 등 게시글에 실제 나온 것만). 없으면 빈 문자열",\n'
+    '  "holdings": [\n'
+    '     {"name": "보유종목명(위 보유종목 목록 기준)",\n'
+    '      "note": "이 시간 글 기준 이 종목 또는 핵심 구성종목 관련 내용 1~2문장. 호재/악재/중립 명시, 구체적 사실"}\n'
+    "     ...글에 관련 내용이 있는 보유종목만. 없으면 빈 배열. 억지로 만들지 말 것\n"
+    "  ],\n"
     '  "sectors": [\n'
     '     {"name": "섹터명(위 목록 기준)", "summary": "이 섹터 관련 이 시간 흐름 1~3문장, 구체적 사실"}\n'
     "     ...관련 내용 있는 섹터만. 없으면 빈 배열\n"
@@ -143,6 +151,14 @@ def _llm_analysis(posts):
     headline = _as_str_list(data.get("headline"), 3)
 
     macro = str(data.get("macro", "")).strip()
+
+    holdings = []
+    for h in data.get("holdings", []) or []:
+        if isinstance(h, dict):
+            name = str(h.get("name", "")).strip()
+            note = str(h.get("note", "")).strip()
+            if name and note:
+                holdings.append({"name": name, "note": note})
 
     sectors = []
     for s in data.get("sectors", []) or []:
@@ -192,14 +208,18 @@ def _llm_analysis(posts):
             p["summary"] = post_summaries[j]
 
     # 내용이 너무 부실하면 폴백 신호
-    if not headline and not sectors and not macro:
+    if not headline and not sectors and not macro and not holdings:
         return None
+
+    active_total = len(watchlist.active_holdings())
 
     return {
         "sentiment_score": score,
         "sentiment_label": _fear_greed_label(score),
         "headline": headline,
         "macro": macro,
+        "holdings": holdings,
+        "holdings_total": active_total,
         "sectors": sectors,
         "emerging": emerging,
         "actions": actions,

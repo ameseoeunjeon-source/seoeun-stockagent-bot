@@ -44,6 +44,21 @@ def format_market(a, ok_channels, total_channels, post_count):
         L.append(a["macro"])
         L.append("")
 
+    # 내 보유종목 브리핑 (항상 표시 — 포트폴리오를 매시간 챙김)
+    holds = a.get("holdings") or []
+    total = a.get("holdings_total", 0)
+    if holds or total:
+        L.append("📌 내 보유종목 브리핑")
+        if holds:
+            for h in holds:
+                L.append(f"▸ {h['name']}")
+                L.append(f"   {h['note']}")
+            if total and len(holds) < total:
+                L.append("▸ 그 외 보유종목: 이번 시간 특이 언급 없음")
+        else:
+            L.append("▸ 이번 시간 보유종목 관련 특이 언급 없음")
+        L.append("")
+
     if a.get("sectors"):
         L.append("💎 보유·관심 섹터 영향")
         for s in a["sectors"]:

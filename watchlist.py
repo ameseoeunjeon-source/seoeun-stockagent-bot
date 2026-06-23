@@ -116,6 +116,15 @@ def sectors_for_prompt():
     return "\n".join(f"- {name}: {desc}" for name, desc in REPORT_SECTORS)
 
 
+def holdings_for_prompt():
+    """일상 점검 대상(보유) 종목을 LLM 프롬프트용 문자열로."""
+    lines = []
+    for h in active_holdings():
+        cons = ", ".join(h["constituents"][:6]) if h["constituents"] else h["name"]
+        lines.append(f"- {h['name']}({h['ticker']}) | 핵심: {cons} | 관전포인트: {h['focus']}")
+    return "\n".join(lines)
+
+
 # 포트 최우선 감시: 메모리 사이클 (실질 익스포저 ~45%)
 # 이 신호가 잡히면 HANARO·SOL TOP2·DRAM 3종목 동시 판정 → 최우선 보고
 MEMORY_CYCLE_TICKERS = ["395270", "0167A0", "DRAM"]
