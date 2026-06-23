@@ -26,42 +26,64 @@ def format_thesis(thesis_result):
 
 
 def format_market(a, ok_channels, total_channels, post_count):
-    """시장 전반 심층 분석 리포트 섹션 (예시 형식)."""
+    """1시간 단위 시장 분석 (섹터 중심)."""
     L = []
-    L.append(f"📝 텔레그램 심층 분석 Report ({_now_str()}) 기준\n")
+    L.append(f"📝 텔레그램 분석 ({_now_str()}, 최근 1시간)\n")
 
     emo = _emoji_label(a["sentiment_label"])
-    L.append(f"{emo} 센티먼트 {a['sentiment_label']} ({a['sentiment_score']})")
-    L.append(f"💡 요약 {a['summary']}\n")
+    L.append(f"{emo} 센티먼트 {a['sentiment_label']} ({a['sentiment_score']})\n")
 
-    if a["keywords"]:
+    if a.get("headline"):
+        L.append("🎯 이 시간의 핵심")
+        for i, h in enumerate(a["headline"], 1):
+            L.append(f"{i}. {h}")
+        L.append("")
+
+    if a.get("macro"):
+        L.append("📊 시장·매크로")
+        L.append(a["macro"])
+        L.append("")
+
+    if a.get("sectors"):
+        L.append("💎 보유·관심 섹터 영향")
+        for s in a["sectors"]:
+            L.append(f"▸ {s['name']}")
+            L.append(f"   {s['summary']}")
+        L.append("")
+
+    if a.get("emerging"):
+        L.append("📰 신규 부상 (2개+ 채널 동시 언급)")
+        for e in a["emerging"]:
+            src = f" ({e['sources']})" if e.get("sources") else ""
+            note = f": {e['note']}" if e.get("note") else ""
+            L.append(f"▸ {e['theme']}{src}{note}")
+        L.append("")
+
+    if a.get("actions"):
+        L.append("⚠️ 점검 포인트")
+        for act in a["actions"]:
+            L.append(f"▸ {act}")
+        L.append("")
+
+    if a.get("keywords"):
         parts = []
         for k, c in a["keywords"]:
             parts.append(f"{k}({c})" if isinstance(c, int) and c > 0 else f"{k}")
         L.append(f"🗣️ Top 키워드: {', '.join(parts)}\n")
 
-    if a["stocks"]:
-        L.append("🔥 주목받는 종목")
-        for s in a["stocks"]:
-            arrow = "📈" if s["score"] >= 0 else "📉"
-            sign = f"+{s['score']}" if s["score"] >= 0 else str(s["score"])
-            L.append(f"{arrow} {s['name']} ({sign})")
-            if s["reason"]:
-                L.append(f"   {s['reason']}")
-        L.append("")
+    L.append(f"🎉 {ok_channels}개 채널 / 게시글 {post_count}개 수집\n")
 
-    L.append(f"🎉 {ok_channels}개 채널에서 게시글 {post_count}개 수집 완료!\n")
-
-    if a["popular"]:
-        L.append("🔥 현시점 인기 게시글 TOP %d\n" % len(a["popular"]))
+    if a.get("popular"):
+        L.append(f"🔥 인기 게시글 TOP {len(a['popular'])}\n")
         for i, p in enumerate(a["popular"], 1):
-            snippet = p["text"].split("\n")[0][:50]
+            summ = p.get("summary")
+            line = summ if summ else (p["text"].split("\n")[0][:50] + "…")
             L.append(f"[{i}위] {p['views']:,} 👁️ | {p['forwards']} 📤")
             L.append(f"📺 {p['channel']}")
-            L.append(f"📝 {snippet}...")
+            L.append(f"📝 {line}")
             L.append(f"🔗 {p['url']}\n")
 
-    L.append("ℹ️ 스코어링: 최근 게시글의 감정(-100~100)과 공유 횟수를 종합 분석합니다.")
+    L.append("ℹ️ 위 내용은 모니터링 채널 게시글 기반 자동 요약입니다. 투자판단은 본인 책임입니다.")
     return "\n".join(L)
 
 

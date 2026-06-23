@@ -101,6 +101,21 @@ HOLDINGS = [
     },
 ]
 
+# 리포트 '보유·관심 섹터 영향' 정리에 쓰는 섹터 가이드 (LLM 프롬프트용)
+REPORT_SECTORS = [
+    ("AI 반도체·메모리", "SK하이닉스, 삼성전자, 삼성전기, 마이크론(MU), HBM/HBM4, DRAM, 낸드, 메모리 고정가"),
+    ("AI 전력 인프라", "LS일렉트릭, 효성중공업, HD현대일렉트릭, 전선, 변압기, 데이터센터 전력, 수주잔고"),
+    ("AI 광통신", "Lumentum, Coherent, Broadcom, 광모듈, 실리콘포토닉스, 하이퍼스케일러 capex"),
+    ("넥스트테크", "IonQ(양자), AST SpaceMobile, Rocket Lab, Oklo(SMR)"),
+    ("빅테크/GOOGL", "Alphabet/구글 검색광고·클라우드·애드테크 반독점"),
+    ("기타 보유", "한온시스템(전장), 금(金) 현물"),
+]
+
+
+def sectors_for_prompt():
+    return "\n".join(f"- {name}: {desc}" for name, desc in REPORT_SECTORS)
+
+
 # 포트 최우선 감시: 메모리 사이클 (실질 익스포저 ~45%)
 # 이 신호가 잡히면 HANARO·SOL TOP2·DRAM 3종목 동시 판정 → 최우선 보고
 MEMORY_CYCLE_TICKERS = ["395270", "0167A0", "DRAM"]
